@@ -6,6 +6,24 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # 20260107
+  backend "s3" {
+    # 1. 剛剛建立的S3名稱
+    bucket = "wayne-terraform-state-backend-20260107"
+
+    # 2. 檔案要在S3裡面放哪裡(資料夾路徑)
+    key = "global/s3/terraform.tfstate"
+
+    # 3. region
+    region = "ap-northeast-1"
+
+    # 4. 鎖定用的table
+    dynamodb_table = "terraform-locks"
+
+    # 5. 加密
+    encrypt = true
+  }
 }
 
 # 2. 設定區域
