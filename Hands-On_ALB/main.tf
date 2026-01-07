@@ -129,12 +129,18 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# 把你的EC2註冊到Target Group內
-resource "aws_lb_target_group_attachment" "web_attachment" {
-  target_group_arn = aws_lb_target_group.wayne-tg.arn
-  target_id        = aws_instance.web.id # 引用原本的EC2 ID
-  port             = 80
-}
+# # 把你的EC2註冊到Target Group內
+# resource "aws_lb_target_group_attachment" "web_attachment" {
+#   target_group_arn = aws_lb_target_group.wayne-tg.arn
+#   target_id        = aws_instance.web.id # 引用原本的EC2 ID
+#   port             = 80
+# }
+# # for number 2
+# resource "aws_lb_target_group_attachment" "web2_attachment" {
+#   target_group_arn = aws_lb_target_group.wayne-tg.arn
+#   target_id        = aws_instance.web2.id # 引用原本的EC2 ID
+#   port             = 80
+# }
 
 # key
 resource "aws_key_pair" "waynelocalkey" {
@@ -142,38 +148,114 @@ resource "aws_key_pair" "waynelocalkey" {
   public_key = file("/home/wayne/.ssh/id_ed25519.pub")
 }
 
-resource "aws_instance" "web" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
+# resource "aws_instance" "web" {
+#   ami           = data.aws_ami.ubuntu.id
+#   instance_type = var.instance_type
 
-  # key
-  key_name = aws_key_pair.waynelocalkey.key_name
+#   # key
+#   key_name = aws_key_pair.waynelocalkey.key_name
 
-  vpc_security_group_ids = [aws_security_group.my_sg.id]
+#   vpc_security_group_ids = [aws_security_group.my_sg.id]
 
-  # execute script
-  user_data = file("${path.module}/user-data.sh")
+#   # execute script
+#   user_data = file("${path.module}/user-data.sh")
 
-  user_data_replace_on_change = true
+#   user_data_replace_on_change = true
 
-  tags = {
-    Name    = "Wayne-Iac-Server"
-    Project = "SRE-Learning"
-  }
-}
+#   tags = {
+#     Name    = "Wayne-Iac-Server"
+#     Project = "SRE-Learning"
+#   }
+# }
+# # AWS instence 2
+# resource "aws_instance" "web2" {
+#   ami           = data.aws_ami.ubuntu.id
+#   instance_type = var.instance_type
+
+#   # key
+#   key_name = aws_key_pair.waynelocalkey.key_name
+
+#   vpc_security_group_ids = [aws_security_group.my_sg.id]
+
+#   # execute script
+#   user_data = file("${path.module}/user-data.sh")
+
+#   user_data_replace_on_change = true
+
+#   tags = {
+#     Name    = "Wayne-Iac-Server-2"
+#     Project = "SRE-Learning"
+#   }
+# }
 
 #output
-output "server_public_ip" {
-  description = "Public IP address of the EC2 instance"
-  value       = aws_instance.web.public_ip
-}
+# output "server_public_ip" {
+#   description = "Public IP address of the EC2 instance"
+#   value       = aws_instance.web.public_ip
+# }
 
-output "server_ssh_command" {
-  description = "Command to SSH into the instance"
-  value       = "ssh -i /home/wayne/.ssh/id_ed25519 ubuntu@${aws_instance.web.public_ip}"
-}
+# output "server_ssh_command" {
+#   description = "Command to SSH into the instance"
+#   value       = "ssh -i /home/wayne/.ssh/id_ed25519 ubuntu@${aws_instance.web.public_ip}"
+# }
 
 output "alb_dns_name" {
   description = "The DNS name of the load balancer"
   value       = aws_lb.wayne_alb.dns_name
+}
+
+resource "aws_launch_template" "wayne_lt" {
+  name = "wayne-launch-template"
+
+  # 1. 基礎硬體設定
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = var.instance_type
+  key_name      = aws_key_pair.waynelocalkey.key_name
+
+  # 2. 網路設定(這裡只要設定SG，不用設subnet，subnet是給ASG決定的。)
+  vpc_security_group_ids = [aws_security_group.my_sg.id]
+
+  # 3. 識別證(userdata)
+  # 注意：Launch Template規定要用filebase64編碼，跟之前file()不一樣！
+  user_data = filebase64("${path.module}/user-data.sh")
+  # 4. 標籤(給模組本身的標籤)
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name    = "Wayne-ASG-Instance" # 後來出生的機器都是該名稱。
+      Project = "SRE-Level-4"
+    }
+  }
+}
+
+# 建立「工廠產線」(Auto Scaling Group)
+resource "aws_autoscaling_group" "wayne-asg" {
+  name = "wayne-asg"
+  # 1. 引用模具
+  launch_template {
+    id      = aws_launch_template.wayne_lt.id
+    version = "$Latest" # 永遠用最新的模具
+  }
+
+  # 2. 決定位置(subnets)
+  # 工廠要把機器生在哪裡？生在我們找到的那些subnets李
+  vpc_zone_identifier = data.aws_subnets.default.ids
+
+  # 3. 決定數量(SRE權力核心)
+  desired_capacity = 2 # 期望值：我希望隨時都有2台
+  min_size         = 1 # 最小值：最少不能低於1台
+  max_size         = 3 # 最大值：最少不能低於3台
+
+  # 4. 自動連結ALB(這還取代了之前的attachment)
+  # 告訴ASG：「你生出來的機器，請自動幫我註冊道這個TG」
+  target_group_arns = [aws_lb_target_group.wayne-tg.arn]
+
+  # 5. 健康檢查機制
+  # ELB = Elastic Load Balancer(即ALB)
+  # 意思：如果ALB說這台機器壞了，ASG就會把它殺掉重開
+  health_check_type         = "ELB"
+  health_check_grace_period = 300 # 給新機器300的寬限期開機，不要一出生就檢查
+
+  # 卻保有這行有加，避免destroy卡住
+  force_delete = true
 }

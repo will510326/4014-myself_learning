@@ -5,6 +5,7 @@
 # Terraform state files contain the actual state of your infrastructure and often sensitive data.
 *.tfstate
 *.tfstate.*
+.terraform.lock.hcl
 
 # Crash log files
 crash.log
