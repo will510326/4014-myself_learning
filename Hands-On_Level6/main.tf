@@ -59,19 +59,19 @@ resource "aws_internet_gateway" "gw" {
 # 3. 建立Public Subnets(客廳)
 # 我們建立2個，分別在不同區域(AZ)，為了高可用性
 resource "aws_subnet" "public_1" {
-  vpc_id = aws_vpc.main.id
-  cidr_block = "10.0.1.0/24" # 分配一段IP
-  availability_zone = data.aws_availability_zones.available.names[0] # 東京1a
-  map_public_ip_on_launch = true # 重點！ 住在這裡的自動會有Public IP
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"                                  # 分配一段IP
+  availability_zone       = data.aws_availability_zones.available.names[0] # 東京1a
+  map_public_ip_on_launch = true                                           # 重點！ 住在這裡的自動會有Public IP
 
   tags = { Name = "wayne-public-1" }
 }
 
 resource "aws_subnet" "public_2" {
-  vpc_id = aws_vpc.main.id
-  cidr_block = "10.0.2.0/24" # 分配一段IP
-  availability_zone = data.aws_availability_zones.available.names[1] # 東京1a
-  map_public_ip_on_launch = true # 重點！ 住在這裡的自動會有Public IP
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"                                  # 分配一段IP
+  availability_zone       = data.aws_availability_zones.available.names[1] # 東京1a
+  map_public_ip_on_launch = true                                           # 重點！ 住在這裡的自動會有Public IP
 
   tags = { Name = "wayne-public-2" }
 }
@@ -79,16 +79,16 @@ resource "aws_subnet" "public_2" {
 # 4. 建立Private Subnets(臥室)
 # 一樣建立2個
 resource "aws_subnet" "private_1" {
-  vpc_id = aws_vpc.main.id
-  cidr_block = "10.0.101.0/24" # 故意跟Public分開遠一點
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.101.0/24" # 故意跟Public分開遠一點
   availability_zone = data.aws_availability_zones.available.names[0]
   # 注意！這裡沒有map_public_ip_on_launch，預設是false(沒有公網IP)
   tags = { Name = "wayne=private-1" }
 }
 
 resource "aws_subnet" "private_2" {
-  vpc_id = aws_vpc.main.id
-  cidr_block = "10.0.102.0/24" # 故意跟Public分開遠一點
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.102.0/24" # 故意跟Public分開遠一點
   availability_zone = data.aws_availability_zones.available.names[0]
   # 注意！這裡沒有map_public_ip_on_launch，預設是false(沒有公網IP)
   tags = { Name = "wayne=private-2" }
@@ -103,12 +103,12 @@ resource "aws_eip" "nat" {
 # 他必須住在Public Subnet才能接觸外網
 resource "aws_nat_gateway" "nat_gw" {
   allocation_id = aws_eip.nat.id
-  subnet_id = aws_subnet.public_1.id # 放在公有區1
+  subnet_id     = aws_subnet.public_1.id # 放在公有區1
 
   tags = { Name = "wayne-nat-gw" }
 
   # 確保IGW先建好，不然NAT會連不上網
-  depends_on = [ aws_internet_gateway.gw ]
+  depends_on = [aws_internet_gateway.gw]
 }
 
 # 7. Public Route Table(公有區導航)
@@ -117,6 +117,43 @@ resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = 
+    gateway_id = aws_internet_gateway.gw.id
   }
+
+  tags = { Name = "wayne-public-rt" }
+}
+
+# 8. Private Route Table
+# 規則：要去全世界(0.0.0.0/0)，請走NAT Gateway
+resource "aws_route_table" "private_rt" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.nat_gw.id
+  }
+
+  tags = { Name = "wayne-private-rt" }
+}
+
+# 9. 關聯(Assocation) - 把Subnet跟Route Table綁在一起
+# 告訴Public Subnet 1&2 使用Public導航
+resource "aws_route_table_association" "public_1_assoc" {
+  subnet_id      = aws_subnet.public_1.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_2_assoc" {
+  subnet_id      = aws_subnet.public_2.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+# 告訴Private Subnet 1&2 使用Private導航
+resource "aws_route_table_association" "private_1_assoc" {
+  subnet_id      = aws_subnet.private_1.id
+  route_table_id = aws_route_table.private_rt.id
+}
+
+resource "aws_route_table_association" "private_2_assoc" {
+  subnet_id      = aws_subnet.private_2.id
+  route_table_id = aws_route_table.private_rt.id
 }
