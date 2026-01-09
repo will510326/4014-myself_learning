@@ -89,7 +89,7 @@ resource "aws_subnet" "private_1" {
 resource "aws_subnet" "private_2" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.102.0/24" # 故意跟Public分開遠一點
-  availability_zone = data.aws_availability_zones.available.names[0]
+  availability_zone = data.aws_availability_zones.available.names[1]
   # 注意！這裡沒有map_public_ip_on_launch，預設是false(沒有公網IP)
   tags = { Name = "wayne=private-2" }
 }
