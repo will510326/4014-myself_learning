@@ -157,3 +157,137 @@ resource "aws_route_table_association" "private_2_assoc" {
   subnet_id      = aws_subnet.private_2.id
   route_table_id = aws_route_table.private_rt.id
 }
+
+# 10. ALB Security Group(允許外網連入)
+resource "aws_security_group" "alb_sg" {
+  name        = "wayne-alb-sg-custom"
+  description = "Allow HTTP traffic to ALB."
+  vpc_id      = aws_vpc.main.id # 重點：指定這個SG屬於新的VPC
+
+  ingress {
+    description = "HTTP from Internet."
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# 11. EC2 Security Group(只允許ALB連入)
+resource "aws_security_group" "ec2_sg" {
+  name        = "wayne-ec2-sg-custom"
+  description = "Allow traffic from ALB only."
+  vpc_id      = aws_vpc.main.id # 指定新VPC
+
+  ingress {
+    description = "HTTP from ALB."
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    # 關鍵鎖定：不寫cidr_blocks，只信任ALB的識別證
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"] # EC2還是要上網下載Docker
+  }
+}
+
+# 12. 建立ALB(住在Public Subnet)
+resource "aws_lb" "wayne_alb" {
+  name               = "wayne-alb-custom"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+
+  # 關鍵：ALB要橫跨兩個
+  subnets = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+}
+
+resource "aws_lb_target_group" "wayne_tg" {
+  name     = "wayne-tg-custom"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id # 指定新的VPC
+
+  health_check {
+    path                = "/"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.wayne_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.wayne_tg.arn
+  }
+}
+
+# 13. 建立模具(launch template)
+# 這裡要引用AMI，我們需要把之前的Data Source補回來
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+}
+
+resource "aws_launch_template" "wayne_lt" {
+  name_prefix   = "wayne-lt-"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = "t3.micro"
+
+  # 綁定那個「只信任ALB」的嚴格SG
+  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+
+  # User Data維持不變(安裝docker/nginx)
+  user_data = filebase64("${path.module}/user-data.sh")
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      "Name" = "Wayne-Private-Instance"
+    }
+  }
+}
+
+# 14. 建立ASG(住在Private Subnet)
+resource "aws_autoscaling_group" "wayne_asg" {
+  name                      = "wayne-asg-custom"
+  desired_capacity          = 2
+  max_size                  = 3
+  min_size                  = 1
+  target_group_arns         = [aws_lb_target_group.wayne_tg.arn]
+  health_check_type         = "ELB"
+  health_check_grace_period = 300
+
+  launch_template {
+    id      = aws_launch_template.wayne_lt.id
+    version = "$Latest"
+  }
+
+  # 關鍵：機器要藏在Private Subnet內
+  vpc_zone_identifier = [aws_subnet.private_1.id, aws_subnet.private_2.id]
+}
+
+# 15. Output(告訴我大門在哪)
+output "alb_dns_name" {
+  value = aws_lb.wayne_alb.dns_name
+}
